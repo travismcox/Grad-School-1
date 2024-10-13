@@ -1,0 +1,100 @@
+---
+title: "NYPDShootingData"
+author: "Travis Cox"
+date: "2024-10-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# NYPD Shooting Analyses
+
+We have gathered the data from the NYPD that has recorded shooting data from January 1, 2006 to Decemeber 31, 2023. This data by no means encompasses every shooting but only those reported to/recorded by the police. However, we should be able to reasonably be able to assertain trends in shootings without a complete accounting of every shot fired in New York for 18 years. 
+
+## Data Prep
+
+We are going to set up the tidyverse library to help clean up our data. Next we are going to read in the data from the City of New York website in CSV form. To clean this data we are going to remove the following: extraneous location data (x and y coordinates on a map, latitude, longitude, Lon_Lat, location descriptions, jurisdiction code, location classifiction), statistical murder flag data, victim information, and perpetrator information. 
+```{r data_prep}
+library(tidyverse)
+library(ggplot2)
+nypd_data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_data <- read_csv(nypd_data_url)
+clean_data <- nypd_data %>% select(-c(X_COORD_CD,Y_COORD_CD,Latitude,Longitude,Lon_Lat,LOC_OF_OCCUR_DESC,JURISDICTION_CODE,LOC_CLASSFCTN_DESC,LOCATION_DESC,STATISTICAL_MURDER_FLAG,))
+summary(clean_data)
+```
+
+# Two Plots
+
+## First Plot: 
+Shootings per month total. We can see a yearly cycle of shootings increasing every summer during July August and September and falling off in the winter. This would lead us to the conclusion that increased temperatures are the cause of more shootings/violence. Also we can see here with the plot that there is a sharp increase in the summer of COVID but the annual summer increases falling each subsequent year closer to pre-COVID shooting levels.
+
+```{r total_by_month, echo=FALSE}
+clean_data_per_month <- clean_data %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>% 
+  group_by(month = lubridate::floor_date(OCCUR_DATE, 'month')) %>% 
+  tally() %>%
+  arrange(., month)
+names(clean_data_per_month)[names(clean_data_per_month) == 'n'] <- 'shootings'
+clean_data_per_month %>%
+  ggplot(aes(x=month, y=shootings)) + 
+  geom_line(aes(color="shootings"))
+```
+
+## Second Plot: 
+Shootings per month, by borough. When the same data is seperated out by boroough we can conclude that the most reported shootings happen in Brooklyn followed by the Bronx. But we want to see if this data is correlated to population census data, aka where people live, or if there is some other factor at play for shootings.
+
+```{r by_month_by_borough, echo=FALSE}
+clean_data_by_borough_per_month <- clean_data %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>% 
+  group_by(Borough = BORO, month = lubridate::floor_date(OCCUR_DATE, 'month')) %>% 
+  tally() %>%
+  arrange(., month)
+names(clean_data_by_borough_per_month)[names(clean_data_by_borough_per_month) == 'n'] <- 'shootings'
+clean_data_by_borough_per_month %>%
+  ggplot(aes(x=month, y=shootings, fill=Borough)) + 
+  geom_bar(stat="identity")
+```
+
+#e Model
+For our model we are going to compare population data by borough to shooting data to see if shootings occur where people live or is there other major factors such as people are more likely get shot when they are out running errands or at work than at home. Taking a look at NYC popultion data from 2000-2020 we see the population percentages only change slightly so for our comparision we will use the 2020 population data to model our expected shootings by borough.
+
+```{r model}
+nyc_population_url <- "https://data.cityofnewyork.us/resource/xywu-7bv9.csv"
+nyc_population_data <- read.csv(nyc_population_url)
+clean_population_data <- nyc_population_data %>% select(borough, X_2020, X_2020_boro_share_of_nyc_total)
+clean_population_data <- clean_population_data[2:6,]
+rownames(clean_population_data) <- NULL
+clean_population_data[,1] <- toupper(clean_population_data[,1])
+names(clean_population_data)[names(clean_population_data) == 'X_2020'] <- 'population'
+names(clean_population_data)[names(clean_population_data) == 'X_2020_boro_share_of_nyc_total'] <- 'percentage'
+clean_data_by_borough <- clean_data %>% group_by(Borough = BORO) %>% tally()
+names(clean_data_by_borough)[names(clean_data_by_borough) == 'n'] <- 'shootings'
+clean_data_by_borough <- clean_data_by_borough %>% mutate(percentage = shootings/sum(shootings))
+clean_shooting_and_population_data <- merge(clean_data_by_borough, clean_population_data, by = 'row.names', all = TRUE)
+temp_model <- lm(shootings ~ population, data = clean_shooting_and_population_data)
+summary(temp_model)
+```
+Now that we have our model lets plot it along side our data and see if it is accurate or not. Seeing major discrepancies in 4 of 5 boroughs would lead us to conclude that population data aka location of where people live is not a good predictive model for shootings in New York City.
+```{r plotting model}
+clean_data_by_borough_with_pop <- clean_data_by_borough %>% add_column(population = clean_population_data$population)
+clean_population_data_with_pred <- clean_population_data %>% mutate(shootings = predict(temp_model))
+names(clean_population_data_with_pred)[names(clean_population_data_with_pred) == 'X_2020'] <- 'population'
+names(clean_population_data_with_pred)[names(clean_population_data_with_pred) == 'X_2020_boro_share_of_nyc_total'] <- 'percentage'
+names(clean_data_by_borough_with_pop)[names(clean_data_by_borough_with_pop) == 'Borough'] <- 'borough'
+clean_data_by_borough_with_pop <- clean_data_by_borough_with_pop %>% relocate(population, .before = shootings)
+clean_data_by_borough_with_pop <- clean_data_by_borough_with_pop %>% relocate(percentage, .before = shootings)
+clean_data_by_borough_with_pop$percentage <- clean_data_by_borough_with_pop$percentage * 100 
+clean_data_by_borough_with_pop <- clean_data_by_borough_with_pop %>% add_column(classification = "Actual")
+clean_population_data_with_pred <- clean_population_data_with_pred %>% add_column(classification = "Predicted")
+clean_shooting_and_population_data_with_pred <- rbind(clean_data_by_borough_with_pop,clean_population_data_with_pred)
+ggplot(clean_shooting_and_population_data_with_pred, aes(x=borough,y=shootings,fill=classification, colour = classification)) + geom_bar(stat = "identity", position = "dodge")
+```
+
+# Bias
+This raises questions about how accurate this is for all shoottings or if other factors like higher or lower police pressence in these boroughs/precints, population density of New York City relative to each borough, shootings per capita per borough.Other factors we could look into at a later time is time of day for shootings, day of the week, etc to try and find better trends to identify factors for shootings in New York City.
+
+I've tried to avoid any bias on my part in reading this data trying to keep interpretations clearly based on location.
